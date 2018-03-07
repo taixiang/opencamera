@@ -175,7 +175,7 @@ public abstract class CameraController {
 	public abstract void release();
 	public abstract void onError(); // triggers error mechanism - should only be called externally for testing purposes
 
-	CameraController(int cameraId) {
+	public CameraController(int cameraId) {
 		this.cameraId = cameraId;
 	}
 	public abstract String getAPI();

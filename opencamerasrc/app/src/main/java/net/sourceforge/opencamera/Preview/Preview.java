@@ -15,10 +15,14 @@ import net.sourceforge.opencamera.Preview.ApplicationInterface.NoFreeStorageExce
 import net.sourceforge.opencamera.Preview.CameraSurface.CameraSurface;
 import net.sourceforge.opencamera.Preview.CameraSurface.MySurfaceView;
 import net.sourceforge.opencamera.Preview.CameraSurface.MyTextureView;
+import net.sourceforge.opencamera.usb.bean.CameraDevice;
+import net.sourceforge.opencamera.usb.bean.CameraHandler;
+import net.sourceforge.opencamera.usb.helper.CameraDeviceHelper;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -51,6 +55,7 @@ import android.graphics.SurfaceTexture;
 import android.hardware.SensorEvent;
 import android.hardware.SensorManager;
 import android.hardware.camera2.DngCreator;
+import android.hardware.usb.UsbRequest;
 import android.location.Location;
 import android.media.CamcorderProfile;
 import android.media.Image;
@@ -80,6 +85,8 @@ import android.view.WindowManager;
 import android.view.View.MeasureSpec;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.Toast;
+
+import static android.util.Log.i;
 
 /** This class was originally named due to encapsulating the camera preview,
  *  but in practice it's grown to more than this, and includes most of the
@@ -681,10 +688,247 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 		if( MyDebug.LOG )
 			Log.d(TAG, "mySurfaceCreated");
 		this.has_surface = true;
+		/**
+		 *打开相机
+		 */
 		this.openCamera();
     }
-    
-    private void mySurfaceDestroyed() {
+
+	private CameraDevice cameraDevice;
+	private CameraHandler cameraHandler;
+
+	private Integer vendorId;
+	private Integer productId;
+
+	private int[] log_request_size_a = new int[100];
+	private int[] log_request_size_b = new int[100];
+	private int log_request_count = 0;
+	private int log_request_received_total = 0;
+	private boolean flag_ab = true;
+	private boolean flag_frameGood_a = false;  //used for indentity if one frame good or bad
+	private boolean flag_frameGood_b = false;
+	private boolean flag_isNew_a = false;      //used for identity if one frame is new or old
+	private boolean flag_isNew_b = false;
+	private volatile int frame_count = 0;
+	private volatile int frame_rate = 0;
+
+	private volatile int refresh_count = 0;
+	private volatile int refresh_rate = 0;
+	private int frame_count_period10 = 0;
+	private int frame_count_bad_period10 = 0;
+	private int pre_pixelposition = 0;
+	private int pixelPosition = 0;
+	private int frame_count_bad_result = 0;
+	private int BITMAP_WIDTH = 1280;
+	private int BITMAP_HEIGHT = 960;
+	private int headByteFrom = 0;
+
+	int memsize = 100;
+	private int onStreaming = 0;
+	private UsbRequest[] request = new UsbRequest[memsize];
+	private ByteBuffer[] xbuffer = new ByteBuffer[memsize];
+	private byte[][] xbufferdata = new byte[memsize][16384];
+	private byte[] ImgDataA;
+	private byte[] ImgDataB;
+	private ReadUsbAsync readUsbAsync ;
+
+	private void initCamera()throws Exception {
+
+		try {
+			cameraDevice = CameraDeviceHelper.getDevice(applicationInterface.getContext() , 5656,2336);
+
+			if( cameraDevice == null ){
+				throw new Exception("Can not find device.");
+			}
+			cameraHandler = CameraDeviceHelper.openCamera(applicationInterface.getContext(),cameraDevice);
+
+			CameraDeviceHelper.initCamera(applicationInterface.getContext(),cameraDevice.getCameraName(),cameraHandler);
+		} catch (Exception e) {
+			Log.e(TAG,e.getMessage());
+		}
+
+		readUsbAsync = new ReadUsbAsync();
+		readUsbAsync.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+
+//		videoSurfaceView.setThread(new VideoThread(videoSurfaceView.getHolder()));
+//		videoSurfaceView.play();
+	}
+
+	public class ReadUsbAsync extends AsyncTask {
+		int rx_byte=0;
+		protected void onHead(){
+			//identity the bad/good frame
+			if (log_request_received_total != (BITMAP_HEIGHT * BITMAP_WIDTH)+ headByteFrom ){
+				Log.v("Bad frames", "receive byte=" + String.valueOf(rx_byte) + "pixelPosition=" + String.valueOf(pixelPosition) + "packageTotal=" + log_request_received_total);
+				if(flag_ab==true) flag_frameGood_a=false;
+				else               flag_frameGood_b=false;
+				frame_count_bad_period10++;
+			}else{
+				if(flag_ab==true) flag_frameGood_a=true;
+				else               flag_frameGood_b=true;
+			}
+
+			//renew the flag
+			if(flag_ab==true)  flag_isNew_a=true;
+			else               flag_isNew_b=true;
+
+			pre_pixelposition=pixelPosition; //max pixel position of previous image
+			pixelPosition=0;
+			flag_ab= !flag_ab;        //switch double buffer flag
+			frame_count++;
+			frame_count_period10++;  //this counter is used for static the bad frames in each 10 frames.
+			//static the bad frame ration in last 10frames.
+			if (frame_count_period10>9) {
+				frame_count_period10=0;
+				frame_count_bad_result=frame_count_bad_period10;
+				frame_count_bad_period10=0;
+			}
+
+			log_request_count=0;
+			log_request_received_total =0;
+			if (flag_ab==true ) log_request_size_a[log_request_count] = rx_byte;
+			else                 log_request_size_b[log_request_count] = rx_byte;
+
+
+
+		}
+
+		protected Object doInBackground(Object[] params) {
+			Log.i(TAG,"### READ ###");
+			try {
+				Thread.sleep(100);
+			} catch (InterruptedException e) {
+				Log.e(TAG,e.getMessage());
+			}
+			onStreaming=1;
+			pixelPosition=0;
+			frame_count=0;
+
+
+			for(int i=0;i<memsize;i++) request[i]=new UsbRequest();
+			for(int i=0;i<memsize;i++) request[i].initialize(cameraHandler.getUsbDeviceConnection(),cameraHandler.getUsbEndpointList().get(0));
+			for(int i=0;i<memsize;i++) request[i].queue(xbuffer[i], 16384);
+
+			int x=0;
+
+
+			while(onStreaming==1){
+				//Log.d(TAG,"#### Loading stream...");
+				cameraHandler.getUsbDeviceConnection().requestWait();
+				rx_byte=xbuffer[x].position();
+
+				//there is some conditions of the return pakcage size; for example:
+				//5 bytes.   16384 bytes   and   the bytes between  5 to 16384. We will do different work based on this number
+				//andorid usb class can only handle maxium 16384 byte transfer.
+
+				if(rx_byte== headByteFrom ){
+
+					log_request_received_total=log_request_received_total+ headByteFrom;
+
+					if ((xbuffer[x].get(0)==-86) && (xbuffer[x].get(1)==17) && (xbuffer[x].get(2)==-52) && (xbuffer[x].get(3)==-18))
+					{
+						//frame head possible condition #1: received a package only has five byte inside and it is just the 0xaa 11 cc ee xx
+						onHead();
+					}
+
+					else{
+
+						if(pixelPosition<BITMAP_WIDTH*BITMAP_HEIGHT- headByteFrom ) {
+							if (flag_ab==true) System.arraycopy(xbufferdata[x], 0, ImgDataA, pixelPosition, headByteFrom);
+							else                System.arraycopy(xbufferdata[x], 0, ImgDataB, pixelPosition, headByteFrom);
+							pixelPosition = pixelPosition + headByteFrom;
+
+							if(log_request_count < memsize -2)
+							{
+								log_request_count++;
+							}
+							else
+							{
+
+							}
+
+							if (flag_ab==true ) log_request_size_a[log_request_count] = rx_byte;
+							else                 log_request_size_b[log_request_count] = rx_byte;
+						}
+					}
+				}
+
+				else if(rx_byte==0){
+				}
+				else if(rx_byte>headByteFrom){
+
+					log_request_received_total=log_request_received_total+rx_byte;
+					if(log_request_count < memsize -2)
+					{
+						log_request_count++;
+					}
+					else
+					{}
+
+					if (flag_ab == true) log_request_size_a[log_request_count] = rx_byte;
+					else                  log_request_size_b[log_request_count] = rx_byte;
+
+					if(pixelPosition<=BITMAP_WIDTH*BITMAP_HEIGHT-rx_byte) {
+                        /*final int finalX = x;
+                        int length = 0;
+                        if( ImgDataA.length - pixelPosition > 16384 ){
+                            length = 16384;
+                        }else{
+                            length = ImgDataA.length - pixelPosition ;
+                        }*/
+						try{
+
+							if (flag_ab == true) System.arraycopy(xbufferdata[x], 0, ImgDataA, pixelPosition, rx_byte);
+							else                  System.arraycopy(xbufferdata[x], 0, ImgDataB, pixelPosition, rx_byte);
+							pixelPosition = pixelPosition + rx_byte;
+
+						}catch(Exception e){
+						}
+
+					}
+
+					//frame head possible condition #2: the five head byte is in the end of one package of return data.
+					if ((xbuffer[x].get(rx_byte-headByteFrom)==-86) && (xbuffer[x].get(rx_byte-4)==17) && (xbuffer[x].get(rx_byte-3)==-52) && (xbuffer[x].get(rx_byte-2)==-18))
+					{
+						onHead();
+						Log.v(TAG,"head on end" );
+					}
+
+
+				}
+
+
+				xbuffer[x].clear();                          //generic a new request
+				request[x].queue(xbuffer[x], 16384);
+
+
+				x++;
+				if (x>memsize-1) x=0;
+			}
+
+			return null;
+		}
+
+		@Override
+		protected void onPreExecute() {
+			super.onPreExecute();
+			frame_count=0;
+			frame_count_period10=0;
+			flag_frameGood_a=false;
+			flag_frameGood_b=false;
+			flag_isNew_a=false;
+			flag_isNew_b=false;
+		}
+		@Override
+		protected void onPostExecute(Object o) {
+			super.onPostExecute(o);
+		}
+	}
+
+
+
+
+	private void mySurfaceDestroyed() {
 		if( MyDebug.LOG )
 			Log.d(TAG, "mySurfaceDestroyed");
 		this.has_surface = false;
@@ -1341,6 +1585,9 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
 
 		camera_open_state = CameraOpenState.CAMERAOPENSTATE_OPENING;
 		int cameraId = applicationInterface.getCameraIdPref();
+		Log.i("》》》》》  "," num == "+camera_controller_manager.getNumberOfCameras());
+
+		Log.i("》》》》》  "," cameraId == "+ cameraId);
 		if( cameraId < 0 || cameraId >= camera_controller_manager.getNumberOfCameras() ) {
 			if( MyDebug.LOG )
 				Log.d(TAG, "invalid cameraId: " + cameraId);

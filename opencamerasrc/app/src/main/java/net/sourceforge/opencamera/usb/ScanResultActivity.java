@@ -18,6 +18,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 
+import net.sourceforge.opencamera.MainActivity;
 import net.sourceforge.opencamera.R;
 import net.sourceforge.opencamera.base.BaseActivity;
 import net.sourceforge.opencamera.usb.adapter.ScanResultListAdapter;
@@ -107,6 +108,7 @@ public class ScanResultActivity extends BaseActivity implements ScanResultContra
 
     private void onUsbCameraPermissionGranted(CameraDevice cameraDevice) {
         if( cameraDevice != null ){
+            Log.i("》》》》》  ","onUsbCameraPermissionGranted  "+hasDownloadFirmware);
             if( hasDownloadFirmware == false ){
                 List<CameraDevice> cameraDevicesList = new ArrayList<>();
                 cameraDevicesList.add(cameraDevice);
@@ -116,11 +118,12 @@ public class ScanResultActivity extends BaseActivity implements ScanResultContra
             }else{
                 //TODO 进入摄像界面
 
-//                Intent intent = new Intent(ScanResultActivity.this, CameraViewportActivity.class);
+
+                Intent intent = new Intent(ScanResultActivity.this, MainActivity.class);
 //                intent.putExtra(EXTRA_KEY_VENDOR_ID ,cameraDevice.getVid());
 //                intent.putExtra(EXTRA_KEY_PRODUCT_ID ,cameraDevice.getPid());
 //
-//                startActivity(intent);
+                startActivity(intent);
             }
         }
     }
@@ -306,6 +309,7 @@ public class ScanResultActivity extends BaseActivity implements ScanResultContra
     }
 
     public void onDownloadFirmwareDone(List<CameraDevice> downloadedCameraDevicesList) {
+        Log.i("》》》》 ","hasDownloadFirmware  "+hasDownloadFirmware);
         if( hasDownloadFirmware == false ){
             hasDownloadFirmware = true;
 

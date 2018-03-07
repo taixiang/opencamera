@@ -48,6 +48,7 @@ public class DownloadFirmwareTask extends AsyncTask<List<CameraDevice>, Integer,
 
     @Override
     protected void onPostExecute(List<CameraDevice> downloadedCameraDeviceList) {
+        Log.i("》》》》  ", "onPostExecute ");
         EventEmitter.emitDownloadFirmwareDoneMessageEvent(downloadedCameraDeviceList);
     }
 
